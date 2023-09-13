@@ -1,0 +1,19 @@
+name: Recette Env Update Modules Workflow
+
+on:
+  workflow_dispatch:
+    branches: [dev, recette, prod]
+
+jobs:
+  update:
+    name: "Mise à jour des modules"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Execution de la tache..."
+        uses: cross-the-world/ssh-scp-ssh-pipelines@latest
+        with:
+          host: ${{ secrets.RECETTE_HOST || secrets.DEFAULT_HOST }}
+          user: ${{ secrets.RECETTE_USER || secrets.DEFAULT_USER }}
+          key: ${{ secrets.RECETTE_SSH_KEY || secrets.DEFAULT_SSH_KEY }}
+          first_ssh: |
+            docker exec ${{ github.ref_name }}_${{ github.event.repository.name }}_odoo odoo -i base -u all --stop-after-init

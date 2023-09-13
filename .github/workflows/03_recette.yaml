@@ -1,0 +1,103 @@
+name: Recette Environnement Workflow
+
+on:
+  pull_request:
+    branches:
+      - recette
+  push:
+    branches:
+      - recette
+
+jobs:
+  test:
+    name: "Recette Test"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Show Informations"
+        run: |
+          echo "1. 🔎 Branch Name ${{ github.ref_name }}"
+          echo "2. 🔎 Repository Name ${{ github.event.repository.name }}"
+      - name: "Checkout Code"
+        uses: actions/checkout@v3
+      - name: Run Black
+        uses: cytopia/docker-black@0.8
+  deploy:
+    name: "Recette Deploiement"
+    runs-on: ubuntu-22.04
+    needs: test
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v3
+      - name: "Create config runner"
+        env:
+          BASE_PATH: ~/${{ github.ref_name }}/${{ github.event.repository.name }}
+          ODOO_CONF: ~/${{ github.ref_name }}/${{ github.event.repository.name }}/server_conf
+          COMPOSE_FILE: ~/${{ github.ref_name }}/${{ github.event.repository.name }}/online-compose.yml
+        run: |
+          cat <<EOF > runner.sh
+          #!/bin/bash
+          if [ "${{ vars.RECETTE_STOP_SERVER }}" = "1" ]; then
+            docker-compose -f $COMPOSE_FILE down
+          else
+            if [ ! -f $ODOO_CONF/odoo.conf ] || [ "${{ vars.RECETTE_UPGRADE_CONF }}" = "1" ]; then
+              echo "[options]" > $ODOO_CONF/odoo.conf
+              echo "admin_passwd = ${{ secrets.RECETTE_ADMIN_PWD || 'admin' }}" >> $ODOO_CONF/odoo.conf
+              echo "server_timezone = Africa/Abidjan" >> $ODOO_CONF/odoo.conf
+              echo "db_host = db" >> $ODOO_CONF/odoo.conf
+              echo "db_port = ${{ secrets.RECETTE_DB_PORT || '5432' }}" >> $ODOO_CONF/odoo.conf
+              echo "db_name = ${{ secrets.RECETTE_DB_NAME || 'odoo' }}" >> $ODOO_CONF/odoo.conf
+              echo "db_user = ${{ secrets.RECETTE_DB_USER || 'odoo' }}" >> $ODOO_CONF/odoo.conf
+              echo "db_password = ${{ secrets.RECETTE_DB_PASSWORD || 'odoo' }}" >> $ODOO_CONF/odoo.conf
+              echo "dbfilter = .*" >> $ODOO_CONF/odoo.conf
+              echo "language = fr_FR" >> $ODOO_CONF/odoo.conf
+              echo "without_demo = True" >> $ODOO_CONF/odoo.conf
+              echo "dev_mode = True" >> $ODOO_CONF/odoo.conf
+              echo "country_code = CI" >> $ODOO_CONF/odoo.conf
+              echo "currency_code = XOF" >> $ODOO_CONF/odoo.conf
+              if [ "${{ vars.RECETTE_USE_ENTREPRISE }}" = "1" ]; then
+                echo "addons_path = /mnt/extra-addons,/mnt/entreprise-addons" >> $ODOO_CONF/odoo.conf
+              else
+                echo "addons_path = /mnt/extra-addons" >> $ODOO_CONF/odoo.conf
+              fi
+            fi
+            if [ ! -f $BASE_PATH/.env ] || [ "${{ vars.RECETTE_UPGRADE_CONF }}" = "1" ]; then
+              echo "ODOO_VERSION=${{ vars.RECETTE_ODOO_VERSION || vars.DEFAULT_ODOO_VERSION || '16.0' }}" > $BASE_PATH/.env
+              echo "POSTGRES_VERSION=${{ vars.RECETTE_POSTGRES_VERSION || vars.DEFAULT_POSTGRES_VERSION || '15' }}" >> $BASE_PATH/.env
+              echo "POSTGRES_DB=${{ secrets.RECETTE_DB_NAME || 'odoo' }}" >> $BASE_PATH/.env
+              echo "ODOO_PORT=${{ vars.RECETTE_ODOO_PORT || '8069' }}" >> $BASE_PATH/.env
+              echo "DB_PORT=${{ secrets.RECETTE_DB_PORT || '5432' }}" >> $BASE_PATH/.env
+              echo "ENTREPRISE_ADDONS=~/addons" >> $BASE_PATH/.env
+              echo "POSTGRES_USER=${{ secrets.RECETTE_DB_USER || 'odoo' }}" >> $BASE_PATH/.env
+              echo "POSTGRES_PASSWORD=${{ secrets.RECETTE_DB_PASSWORD || 'odoo' }}" >> $BASE_PATH/.env
+              echo "DB_CONTAINER_NAME=${{ github.ref_name }}_${{ github.event.repository.name }}_db" >> $BASE_PATH/.env
+              echo "ODOO_CONTAINER_NAME=${{ github.ref_name }}_${{ github.event.repository.name }}_odoo" >> $BASE_PATH/.env
+              echo "CONFIG_PATH=./server_conf" >> $BASE_PATH/.env
+            fi
+            if [ "${{ vars.RECETTE_CLEAN_ALL_DATAS }}" = "1" ]; then
+              docker-compose -f $COMPOSE_FILE down --volumes
+            else
+              docker-compose -f $COMPOSE_FILE stop
+            fi
+            docker-compose -f $COMPOSE_FILE up -d
+          fi
+          EOF
+      - name: Server Actions with SSH 
+        uses: cross-the-world/ssh-scp-ssh-pipelines@latest
+        env:
+          BASE_PATH: ~/${{ github.ref_name }}/${{ github.event.repository.name }}
+          ODOO_CONF: ~/${{ github.ref_name }}/${{ github.event.repository.name }}/server_conf
+        with:
+          host: ${{ secrets.RECETTE_HOST || secrets.DEFAULT_HOST }}
+          user: ${{ secrets.RECETTE_USER || secrets.DEFAULT_USER }}
+          key: ${{ secrets.RECETTE_SSH_KEY || secrets.DEFAULT_SSH_KEY }}
+          first_ssh: |
+            mkdir -p $BASE_PATH
+            mkdir -p $ODOO_CONF
+          scp: |
+            './*' => $BASE_PATH
+          last_ssh: |
+            chmod +x $BASE_PATH/runner.sh
+            sh $BASE_PATH/runner.sh
+      - name: "Get link..."
+        run: |
+          echo "http://${{ secrets.RECETTE_HOST || secrets.DEFAULT_HOST }}:${{ vars.RECETTE_ODOO_PORT || '8069' }}"
